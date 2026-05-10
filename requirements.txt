@@ -1,3 +1,11 @@
-git add requirements.txt
-git commit -m "Pin pakker til kompatible versjoner"
-git push
+streamlit
+pandas
+requests
+folium
+streamlit-folium
+streamlit-js-eval
+streamlit-authenticator
+bcrypt
+reportlab
+gspread
+google-auth
