@@ -1,12 +1,3 @@
-streamlit
-pandas
-requests
-folium
-streamlit-folium
-streamlit-js-eval
-bcrypt
-streamlit-authenticator
-reportlab
-git add .
-git commit -m "Legger til Google Sheets-støtte"
+git add requirements.txt
+git commit -m "Pin pakker til kompatible versjoner"
 git push
