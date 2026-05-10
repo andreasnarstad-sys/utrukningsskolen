@@ -5,3 +5,4 @@ folium
 streamlit-folium
 streamlit-js-eval
 bcrypt
+streamlit-authenticator
