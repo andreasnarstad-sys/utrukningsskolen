@@ -589,12 +589,14 @@ def oppdater_posisjon(bil, lat, lon):
     df.to_csv(FIL_POSISJON, index=False, encoding="utf-8-sig")
 
 def sjekk_dagsjekk_status(bil_navn):
-    if not os.path.exists(FIL_DAGSJEKK): return False
     try:
-        df = pd.read_csv(FIL_DAGSJEKK, on_bad_lines='skip')
+        df = les_csv(FIL_DAGSJEKK)
+        if df.empty or "Dato" not in df.columns or "Bil" not in df.columns:
+            return False
         return not df[(df['Bil'] == bil_navn) &
                       (df['Dato'].astype(str).str.strip().str[:10] == str(date.today()))].empty
-    except: return False
+    except Exception:
+        return False
 
 @st.cache_data(ttl=60)
 def hent_stedsnavn(lat, lon):
@@ -862,10 +864,8 @@ def lag_pdf_rapport(fra_dato, til_dato, bil_filter, periodenavn):
 
 def vis_km_oversikt(dato, bil_filter):
     """Beregn kjørte km per bil for valgt dato (siste minus første km-avlesning)."""
-    if not os.path.exists(FIL_TURER):
-        return
     df = les_csv(FIL_TURER)
-    if df.empty or "Km_start" not in df.columns:
+    if df.empty or "Km_start" not in df.columns or "Dato" not in df.columns:
         return
     df = df[df['Dato'].astype(str).str.strip().str[:10] == str(dato)[:10]]
     if bil_filter != "Alle":
@@ -910,10 +910,10 @@ def vis_km_oversikt(dato, bil_filter):
             </div>""".replace(",", " "), unsafe_allow_html=True)
 
 def vis_rapport_tabell(fil, dato, bil_filter):
-    if not os.path.exists(fil):
+    df = les_csv(fil)
+    if df.empty or "Dato" not in df.columns:
         st.info("Ingen data registrert ennå.")
         return
-    df = les_csv(fil)
     df = df[df['Dato'].astype(str).str.strip().str[:10] == str(dato)[:10]]
     if bil_filter != "Alle" and "Bil" in df.columns:
         df = df[df['Bil'] == bil_filter]
