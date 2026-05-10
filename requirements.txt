@@ -7,3 +7,6 @@ streamlit-js-eval
 bcrypt
 streamlit-authenticator
 reportlab
+git add .
+git commit -m "Legger til Google Sheets-støtte"
+git push
