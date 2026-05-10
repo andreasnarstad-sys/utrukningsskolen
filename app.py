@@ -460,22 +460,22 @@ FIL_POSISJON = "bil_posisjoner.csv"
 FIL_BILER = "biler.csv"
 
 def last_biler():
-    """Les bil-konfig fra CSV. Opprett standard hvis fil mangler."""
-    if not os.path.exists(FIL_BILER):
+    """Les bil-konfig. Opprett standard hvis tom."""
+    df = les_csv(FIL_BILER)
+    if df.empty:
         std = pd.DataFrame([
-            {"Bil": "Bil 1",  "Reg_nr": "AA 12345", "Operativ": "Ja"},
-            {"Bil": "Bil 2",  "Reg_nr": "BB 23456", "Operativ": "Ja"},
-            {"Bil": "Bil 3",  "Reg_nr": "CC 34567", "Operativ": "Ja"},
-            {"Bil": "Bil 4",  "Reg_nr": "",         "Operativ": "Nei"},
-            {"Bil": "Bil 5",  "Reg_nr": "",         "Operativ": "Nei"},
-            {"Bil": "Bil 6",  "Reg_nr": "",         "Operativ": "Nei"},
-            {"Bil": "Bil 7",  "Reg_nr": "",         "Operativ": "Nei"},
-            {"Bil": "Bil 8",  "Reg_nr": "",         "Operativ": "Nei"},
-            {"Bil": "Bil 9",  "Reg_nr": "",         "Operativ": "Nei"},
-            {"Bil": "Bil 10", "Reg_nr": "",         "Operativ": "Nei"},
+            {"Bil": f"Bil {i}", "Reg_nr": r, "Operativ": "Ja" if r else "Nei"}
+            for i, r in enumerate(
+                ["AA 12345","BB 23456","CC 34567","","","","","","",""], start=1)
         ])
-        std.to_csv(FIL_BILER, index=False, encoding="utf-8-sig")
-    return pd.read_csv(FIL_BILER, dtype=str).fillna("")
+        if _bruk_sheets():
+            ark = _hent_ark(FIL_BILER, opprett_hvis_mangler=True)
+            ark.clear()
+            ark.update([std.columns.tolist()] + std.astype(str).values.tolist())
+        else:
+            std.to_csv(FIL_BILER, index=False, encoding="utf-8-sig")
+        return std
+    return df.astype(str).fillna("")
 
 def aktive_biler():
     """Returner ordbok {bilnavn: regnr} for operative biler."""
@@ -494,8 +494,59 @@ FYLKER = {"Innlandet":"34","Oslo":"03","Trøndelag":"50","Rogaland":"11",
           "Vestland":"46","Agder":"42","Møre og Romsdal":"15","Nordland":"18","Finnmark":"56"}
 
 # --- 4. HJELPEFUNKSJONER ---
+# ── GOOGLE SHEETS-INTEGRASJON ─────────────────────────────────────
+# Hvis [gcp_service_account] og [google_sheets].sheet_id er satt i
+# Streamlit secrets, lagres alle data i Google Sheets. Hvert "filnavn"
+# blir et eget ark (worksheet) i samme regneark.
+# Hvis ikke konfigurert, faller appen tilbake til lokale CSV-filer.
+
+def _bruk_sheets():
+    try:
+        return ("gcp_service_account" in st.secrets and
+                "google_sheets" in st.secrets and
+                "sheet_id" in st.secrets["google_sheets"])
+    except Exception:
+        return False
+
+@st.cache_resource(show_spinner=False)
+def _sheets_klient():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    scopes = ["https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=scopes)
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(st.secrets["google_sheets"]["sheet_id"])
+
+def _ark_navn(filnavn):
+    return os.path.splitext(os.path.basename(filnavn))[0]
+
+def _hent_ark(filnavn, opprett_hvis_mangler=True):
+    sh = _sheets_klient()
+    navn = _ark_navn(filnavn)
+    try:
+        return sh.worksheet(navn)
+    except Exception:
+        if opprett_hvis_mangler:
+            return sh.add_worksheet(title=navn, rows=1000, cols=30)
+        return None
+
 def les_csv(filnavn):
-    """Robust CSV-leser som håndterer inkonsistente kolonner."""
+    """Robust leser — Sheets hvis tilgjengelig, ellers lokal CSV."""
+    if _bruk_sheets():
+        try:
+            ark = _hent_ark(filnavn, opprett_hvis_mangler=False)
+            if ark is None:
+                return pd.DataFrame()
+            verdier = ark.get_all_values()
+            if not verdier:
+                return pd.DataFrame()
+            head, *rader = verdier
+            return pd.DataFrame(rader, columns=head)
+        except Exception as e:
+            st.warning(f"Kunne ikke lese {filnavn} fra Google Sheets: {e}")
+            return pd.DataFrame()
     if not os.path.exists(filnavn):
         return pd.DataFrame()
     try:
@@ -504,19 +555,37 @@ def les_csv(filnavn):
         return pd.DataFrame()
 
 def lagre_data(data, filnavn):
-    """Lagrer ny rad og normaliserer hele filen til konsistent struktur."""
-    ny_rad = pd.DataFrame([data])
+    """Lagrer ny rad — til Sheets hvis konfigurert, ellers lokal CSV."""
+    ny_rad = pd.DataFrame([{k: ("" if pd.isna(v) else v) for k, v in data.items()}])
     eksisterende = les_csv(filnavn)
     samlet = pd.concat([eksisterende, ny_rad], ignore_index=True, sort=False)
+    samlet = samlet.fillna("")
+
+    if _bruk_sheets():
+        try:
+            ark = _hent_ark(filnavn, opprett_hvis_mangler=True)
+            ark.clear()
+            ark.update([samlet.columns.tolist()] + samlet.astype(str).values.tolist())
+            return
+        except Exception as e:
+            st.warning(f"Sheets-skriving feilet for {filnavn}: {e}. Lagrer lokalt.")
+
     samlet.to_csv(filnavn, index=False, encoding="utf-8-sig")
 
 def oppdater_posisjon(bil, lat, lon):
     data = {"Bil": bil, "Tid": datetime.now().strftime("%H:%M"), "Lat": lat, "Lon": lon}
-    if os.path.exists(FIL_POSISJON):
-        df = pd.read_csv(FIL_POSISJON, on_bad_lines='skip')
-        df = pd.concat([df[df['Bil'] != bil], pd.DataFrame([data])])
-    else:
-        df = pd.DataFrame([data])
+    df = les_csv(FIL_POSISJON)
+    if not df.empty and "Bil" in df.columns:
+        df = df[df['Bil'] != bil]
+    df = pd.concat([df, pd.DataFrame([data])], ignore_index=True, sort=False).fillna("")
+    if _bruk_sheets():
+        try:
+            ark = _hent_ark(FIL_POSISJON, opprett_hvis_mangler=True)
+            ark.clear()
+            ark.update([df.columns.tolist()] + df.astype(str).values.tolist())
+            return
+        except Exception:
+            pass
     df.to_csv(FIL_POSISJON, index=False, encoding="utf-8-sig")
 
 def sjekk_dagsjekk_status(bil_navn):
@@ -1351,6 +1420,31 @@ elif st.session_state.side == "Rapport":
         # ── ADMIN: BILREGISTER ─────────────────────────────────────
         if rolle == "admin":
             st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+
+            # Sheets-diagnose
+            with st.expander("☁️  Google Sheets-status", expanded=False):
+                if _bruk_sheets():
+                    st.success("✅ Secrets er konfigurert — appen prøver å bruke Google Sheets.")
+                    st.caption(f"Sheet ID: `{st.secrets['google_sheets']['sheet_id']}`")
+                    if st.button("🔄 Test tilkobling til Sheets"):
+                        try:
+                            sh = _sheets_klient()
+                            tittel = sh.title
+                            ark_navn = [w.title for w in sh.worksheets()]
+                            st.success(f"✅ Koblet til regnearket: **{tittel}**")
+                            st.write("Ark som finnes:", ark_navn or "(ingen ennå)")
+                        except Exception as e:
+                            st.error(f"❌ Feil: {e}")
+                            st.info("Mulige årsaker:\n"
+                                    "1. Service-kontoen mangler tilgang til regnearket\n"
+                                    "2. Sheets API eller Drive API er ikke aktivert\n"
+                                    "3. private_key i secrets er ikke korrekt formatert")
+                else:
+                    st.warning("⚠️ Secrets er IKKE konfigurert — appen bruker lokal CSV-lagring "
+                               "som forsvinner ved restart på Streamlit Cloud.")
+                    st.caption("Sjekk at både `[gcp_service_account]` og `[google_sheets].sheet_id` "
+                               "er fylt inn i Settings → Secrets.")
+
             with st.expander("🛠️  Admin: Bilregister og operativ status", expanded=False):
                 st.caption("Rediger registreringsnummer og hak av hvilke biler som er operative. "
                            "Kun operative biler kan brukes i registrering og vises i flåtestatus.")
@@ -1372,7 +1466,17 @@ elif st.session_state.side == "Rapport":
                                          "Operativ": "Ja" if ny_op else "Nei"})
 
                     if st.form_submit_button("💾  Lagre bilregister", use_container_width=True):
-                        pd.DataFrame(redigert).to_csv(FIL_BILER, index=False, encoding="utf-8-sig")
+                        df_ny = pd.DataFrame(redigert)
+                        if _bruk_sheets():
+                            try:
+                                ark = _hent_ark(FIL_BILER, opprett_hvis_mangler=True)
+                                ark.clear()
+                                ark.update([df_ny.columns.tolist()] + df_ny.astype(str).values.tolist())
+                            except Exception as e:
+                                st.error(f"Sheets-skriving feilet: {e}")
+                                df_ny.to_csv(FIL_BILER, index=False, encoding="utf-8-sig")
+                        else:
+                            df_ny.to_csv(FIL_BILER, index=False, encoding="utf-8-sig")
                         st.cache_data.clear()
                         st.success("✅ Bilregister oppdatert.")
                         st.rerun()
