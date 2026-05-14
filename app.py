@@ -469,9 +469,13 @@ def last_biler():
                 ["AA 12345","BB 23456","CC 34567","","","","","","",""], start=1)
         ])
         if _bruk_sheets():
-            ark = _hent_ark(FIL_BILER, opprett_hvis_mangler=True)
-            ark.clear()
-            ark.update([std.columns.tolist()] + std.astype(str).values.tolist())
+            try:
+                ark = _hent_ark(FIL_BILER, opprett_hvis_mangler=True)
+                ark.clear()
+                ark.update([std.columns.tolist()] + std.astype(str).values.tolist())
+            except Exception as e:
+                st.warning(f"Kunne ikke opprette bilregister i Sheets: {e}. "
+                           f"Bruker standardliste i denne økten.")
         else:
             std.to_csv(FIL_BILER, index=False, encoding="utf-8-sig")
         return std
@@ -664,199 +668,362 @@ def filtrer_periode(df, fra_dato, til_dato):
     return df.drop(columns=['_d'])
 
 def lag_pdf_rapport(fra_dato, til_dato, bil_filter, periodenavn):
-    """Generer PDF-rapport for kjøringer og ATK i valgt periode/bil."""
+    """Generer ryddig, operativt fokusert PDF-rapport."""
+    import math
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        leftMargin=18*mm, rightMargin=18*mm,
-        topMargin=18*mm, bottomMargin=18*mm,
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=14*mm, bottomMargin=14*mm,
         title=f"Utrykningsskolen - {periodenavn}"
     )
+    SIDEBREDDE = 180  # mm tilgjengelig
 
+    # ── FARGEPALETT ───────────────────────────────────────────────
     NAVY        = colors.HexColor("#1e3a8a")
     NAVY_DARK   = colors.HexColor("#0b1d52")
     NAVY_LIGHT  = colors.HexColor("#3b5fc9")
-    GREY_BG     = colors.HexColor("#f3f4f6")
-    GREY_BORDER = colors.HexColor("#e5e7eb")
-    TEXT_SOFT   = colors.HexColor("#6b7280")
+    ACCENT      = colors.HexColor("#dc2626")
+    SUCCESS     = colors.HexColor("#059669")
+    SOFT_BG     = colors.HexColor("#f8fafc")
+    LIGHT_BG    = colors.HexColor("#eef2ff")
+    GREY_BG     = colors.HexColor("#f1f5f9")
+    GREY_BORDER = colors.HexColor("#e2e8f0")
+    TEXT        = colors.HexColor("#0f172a")
+    TEXT_SOFT   = colors.HexColor("#64748b")
 
-    styles = getSampleStyleSheet()
-    H1 = ParagraphStyle('H1', parent=styles['Heading1'],
-        fontSize=22, leading=26, textColor=NAVY, fontName='Helvetica-Bold',
-        spaceAfter=2)
-    SUB = ParagraphStyle('SUB', parent=styles['Normal'],
-        fontSize=10, textColor=TEXT_SOFT, fontName='Helvetica', spaceAfter=14)
-    H2 = ParagraphStyle('H2', parent=styles['Heading2'],
-        fontSize=14, leading=18, textColor=NAVY, fontName='Helvetica-Bold',
-        spaceBefore=14, spaceAfter=8)
-    META = ParagraphStyle('META', parent=styles['Normal'],
-        fontSize=9, textColor=TEXT_SOFT, fontName='Helvetica')
-    BODY = ParagraphStyle('BODY', parent=styles['Normal'],
-        fontSize=10, leading=13, textColor=colors.HexColor("#0f172a"))
-    SMALL = ParagraphStyle('SMALL', parent=styles['Normal'],
-        fontSize=9, leading=12)
+    # ── TEKSTSTILER ───────────────────────────────────────────────
+    H1 = ParagraphStyle('H1', fontSize=24, leading=28, textColor=NAVY,
+        fontName='Helvetica-Bold', spaceAfter=0)
+    H2 = ParagraphStyle('H2', fontSize=12, leading=15, textColor=NAVY,
+        fontName='Helvetica-Bold', spaceBefore=16, spaceAfter=8,
+        letterSpacing=0.5)
+    SUB = ParagraphStyle('SUB', fontSize=10, textColor=TEXT_SOFT,
+        fontName='Helvetica', spaceAfter=10)
+    BODY = ParagraphStyle('BODY', fontSize=10, leading=13, textColor=TEXT)
+    SMALL = ParagraphStyle('SMALL', fontSize=8.5, leading=11, textColor=TEXT)
+    CELL = ParagraphStyle('CELL', fontSize=8.5, leading=11, textColor=TEXT)
+    META = ParagraphStyle('META', fontSize=8, textColor=TEXT_SOFT)
 
     flow = []
 
-    # ── HEADER-BANNER ─────────────────────────────────────────────
-    if fra_dato == til_dato:
-        periode_tekst = fra_dato.strftime("%d. %B %Y")
-    else:
-        periode_tekst = f"{fra_dato.strftime('%d.%m.%Y')}  –  {til_dato.strftime('%d.%m.%Y')}"
-    bil_tekst = bil_filter if bil_filter != "Alle" else "Alle biler"
+    # ── HJELPEFUNKSJONER ─────────────────────────────────────────
+    def beregn_minutter(start, slutt):
+        try:
+            s = str(start).strip().replace(".", ":")[:5]
+            e = str(slutt).strip().replace(".", ":")[:5]
+            sh, sm = int(s.split(":")[0]), int(s.split(":")[1])
+            eh, em = int(e.split(":")[0]), int(e.split(":")[1])
+            min = (eh * 60 + em) - (sh * 60 + sm)
+            return min if min > 0 else 0
+        except Exception:
+            return 0
 
-    header_data = [[
-        Paragraph(f"<b>🚑 Utrykningsskolen</b>", ParagraphStyle(
-            'HD', fontSize=18, textColor=colors.white, fontName='Helvetica-Bold')),
-        Paragraph(f"<font color='#cbd5e1' size='9'>Generert {datetime.now().strftime('%d.%m.%Y %H:%M')}</font>",
-            ParagraphStyle('HD2', fontSize=9, textColor=colors.white, alignment=TA_RIGHT))
-    ]]
-    header_tbl = Table(header_data, colWidths=[110*mm, 60*mm])
-    header_tbl.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), NAVY_DARK),
-        ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 16),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 16),
-        ('TOPPADDING', (0, 0), (-1, -1), 14),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
-    ]))
-    flow.append(header_tbl)
-    flow.append(Spacer(1, 14))
+    def skoletimer(minutter):
+        return math.ceil((minutter / 45.0) * 2) / 2.0
 
-    flow.append(Paragraph(f"Rapport for {periodenavn.lower()}", H1))
-    flow.append(Paragraph(f"<b>{periode_tekst}</b> &nbsp;·&nbsp; {bil_tekst}", SUB))
+    def fmt_skoletime(n):
+        return f"{n:.1f}".replace(".0", "")
 
-    # ── HENT DATA ─────────────────────────────────────────────────
+    def seksjonshode(ikon, tittel, undertittel=""):
+        """Visuell seksjonsoverskrift med farget bånd til venstre."""
+        undert = (f"<br/><font color='#64748b' size='9'>{undertittel}</font>"
+                  if undertittel else "")
+        return Table([[
+            Paragraph(f"<font color='#1e3a8a' size='13'><b>{ikon}  {tittel}</b></font>{undert}",
+                      BODY)
+        ]], colWidths=[SIDEBREDDE*mm], style=TableStyle([
+            ('BACKGROUND',  (0, 0), (-1, -1), LIGHT_BG),
+            ('LEFTPADDING', (0, 0), (-1, -1), 14),
+            ('RIGHTPADDING',(0, 0), (-1, -1), 14),
+            ('TOPPADDING',  (0, 0), (-1, -1), 9),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 9),
+            ('LINEBEFORE',  (0, 0), (0, -1), 4, NAVY),
+        ]))
+
+    # ── HENT OG FILTRER DATA ──────────────────────────────────────
     df_t = filtrer_periode(les_csv(FIL_TURER), fra_dato, til_dato)
     df_a = filtrer_periode(les_csv(FIL_ATK), fra_dato, til_dato)
     if bil_filter != "Alle":
         if not df_t.empty: df_t = df_t[df_t.get('Bil', '') == bil_filter]
         if not df_a.empty: df_a = df_a[df_a.get('Bil', '') == bil_filter]
 
-    # ── NØKKELTALL-KORT ──────────────────────────────────────────
+    # Periode-tekst
+    no_måneder = {1:"januar",2:"februar",3:"mars",4:"april",5:"mai",6:"juni",
+                  7:"juli",8:"august",9:"september",10:"oktober",
+                  11:"november",12:"desember"}
+    if fra_dato == til_dato:
+        periode_tekst = f"{fra_dato.day}. {no_måneder[fra_dato.month]} {fra_dato.year}"
+    else:
+        periode_tekst = (f"{fra_dato.day}. {no_måneder[fra_dato.month]} "
+                         f"– {til_dato.day}. {no_måneder[til_dato.month]} {til_dato.year}")
+    bil_tekst = bil_filter if bil_filter != "Alle" else "Alle operative biler"
+
+    # ── HEADER ─────────────────────────────────────────────────────
+    header_inner = Table([
+        [Paragraph("<font color='white' size='18'><b>🚑 Utrykningsskolen</b></font>", BODY),
+         Paragraph(f"<font color='#cbd5e1' size='9'>"
+                   f"Generert {datetime.now().strftime('%d.%m.%Y · %H:%M')}</font>",
+                   ParagraphStyle('R', alignment=TA_RIGHT))],
+        [Paragraph(f"<font color='white' size='13'><b>{periodenavn}</b></font>"
+                   f"<br/><font color='#a5b4fc' size='9'>{periode_tekst}</font>",
+                   ParagraphStyle('HW', textColor=colors.white)),
+         Paragraph(f"<font color='#a5b4fc' size='9'>FILTER</font><br/>"
+                   f"<font color='white' size='11'><b>{bil_tekst}</b></font>",
+                   ParagraphStyle('HW2', alignment=TA_RIGHT))],
+    ], colWidths=[110*mm, 70*mm])
+    header_inner.setStyle(TableStyle([
+        ('BACKGROUND',  (0, 0), (-1, -1), NAVY_DARK),
+        ('VALIGN',      (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 18),
+        ('RIGHTPADDING',(0, 0), (-1, -1), 18),
+        ('TOPPADDING',  (0, 0), (0, 0), 14),
+        ('BOTTOMPADDING',(0, 0), (-1, 0), 8),
+        ('TOPPADDING',  (0, 1), (-1, 1), 2),
+        ('BOTTOMPADDING',(0, 1), (-1, 1), 14),
+    ]))
+    flow.append(header_inner)
+    flow.append(Spacer(1, 12))
+
+    # ── NØKKELTALL ────────────────────────────────────────────────
     antall_turer = len(df_t)
     antall_atk   = len(df_a)
     km_total = 0
-    if not df_t.empty and "Km_start" in df_t.columns:
-        for bil, grp in df_t.groupby('Bil'):
-            km_alle = pd.concat([
-                pd.to_numeric(grp.get('Km_start'), errors='coerce'),
-                pd.to_numeric(grp.get('Km_slutt'), errors='coerce')
-            ]).dropna()
-            if len(km_alle) >= 2:
-                km_total += int(km_alle.max() - km_alle.min())
+    total_min = 0
 
-    def lag_nokkel(verdi, etikett, farge):
+    if not df_t.empty:
+        if "Km_start" in df_t.columns:
+            for bil, grp in df_t.groupby('Bil'):
+                km_alle = pd.concat([
+                    pd.to_numeric(grp.get('Km_start'), errors='coerce'),
+                    pd.to_numeric(grp.get('Km_slutt'), errors='coerce')
+                ]).dropna()
+                if len(km_alle) >= 2:
+                    km_total += int(km_alle.max() - km_alle.min())
+        for _, r in df_t.iterrows():
+            total_min += beregn_minutter(r.get("Starttid",""), r.get("Sluttid",""))
+
+    total_skoletimer = skoletimer(total_min) if total_min else 0
+
+    def nokkel_kort(verdi, etikett, ikon, accent_color):
         return Table([
-            [Paragraph(f"<font color='{farge}' size='22'><b>{verdi}</b></font>", BODY)],
-            [Paragraph(f"<font color='#6b7280' size='8'>{etikett.upper()}</font>", BODY)]
-        ], colWidths=[55*mm], style=TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-            ('BOX', (0, 0), (-1, -1), 0.7, GREY_BORDER),
-            ('LEFTPADDING', (0, 0), (-1, -1), 14),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 14),
-            ('TOPPADDING', (0, 0), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-            ('LINEBEFORE', (0, 0), (0, -1), 4, NAVY_LIGHT),
+            [Paragraph(f"<font color='{accent_color}' size='9'><b>{ikon} {etikett.upper()}</b></font>", BODY)],
+            [Paragraph(f"<font color='#0f172a' size='22'><b>{verdi}</b></font>", BODY)],
+        ], colWidths=[42*mm], style=TableStyle([
+            ('BACKGROUND',  (0, 0), (-1, -1), colors.white),
+            ('BOX',         (0, 0), (-1, -1), 0.6, GREY_BORDER),
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),
+            ('RIGHTPADDING',(0, 0), (-1, -1), 12),
+            ('TOPPADDING',  (0, 0), (0, 0), 10),
+            ('BOTTOMPADDING',(0, 0), (0, 0), 2),
+            ('TOPPADDING',  (0, 1), (0, 1), 0),
+            ('BOTTOMPADDING',(0, 1), (0, 1), 12),
+            ('LINEABOVE',   (0, 0), (-1, 0), 3, NAVY_LIGHT),
         ]))
 
     nokkel_rad = Table([[
-        lag_nokkel(antall_turer, "Kjøreturer", "#1e3a8a"),
-        lag_nokkel(f"{km_total} km" if km_total else "—", "Total distanse", "#1e3a8a"),
-        lag_nokkel(antall_atk, "ATK-passeringer", "#1e3a8a"),
-    ]], colWidths=[57*mm, 57*mm, 57*mm])
-    nokkel_rad.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+        nokkel_kort(antall_turer, "Kjøreturer", "🚗", "#1e3a8a"),
+        nokkel_kort(fmt_skoletime(total_skoletimer), "Skoletimer", "🎓", "#1e3a8a"),
+        nokkel_kort(f"{km_total}" if km_total else "—", "Km kjørt", "📍", "#059669"),
+        nokkel_kort(antall_atk, "ATK-pass.", "📸", "#dc2626"),
+    ]], colWidths=[45*mm, 45*mm, 45*mm, 45*mm])
+    nokkel_rad.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP')]))
     flow.append(nokkel_rad)
 
+    # ── PER-BIL SAMMENDRAG (bare ved Alle) ────────────────────────
+    if bil_filter == "Alle" and not df_t.empty and "Bil" in df_t.columns:
+        biler_brukt = sorted(df_t['Bil'].dropna().unique().tolist())
+        if len(biler_brukt) > 1:
+            flow.append(seksjonshode("🚘", "Sammendrag per bil"))
+            rader = [["Bil", "Reg.nr", "Turer", "Km", "Skoletimer", "Elever"]]
+            biler_konfig = alle_biler()
+            for bil in biler_brukt:
+                grp = df_t[df_t['Bil'] == bil]
+                km_b = 0
+                if "Km_start" in grp.columns:
+                    km_alle = pd.concat([
+                        pd.to_numeric(grp.get('Km_start'), errors='coerce'),
+                        pd.to_numeric(grp.get('Km_slutt'), errors='coerce')
+                    ]).dropna()
+                    if len(km_alle) >= 2:
+                        km_b = int(km_alle.max() - km_alle.min())
+                min_b = sum(beregn_minutter(r.get("Starttid",""), r.get("Sluttid",""))
+                           for _, r in grp.iterrows())
+                elever = grp['Elev'].dropna().astype(str).str.strip()
+                elever = elever[elever != ""].nunique() if "Elev" in grp.columns else 0
+                rader.append([
+                    Paragraph(f"<b>{bil}</b>", CELL),
+                    Paragraph(biler_konfig.get(bil, "—"), CELL),
+                    Paragraph(str(len(grp)), CELL),
+                    Paragraph(f"{km_b} km" if km_b else "—", CELL),
+                    Paragraph(f"<b>{fmt_skoletime(skoletimer(min_b))}</b>", CELL),
+                    Paragraph(str(elever), CELL),
+                ])
+            tbl = Table(rader, colWidths=[28*mm, 30*mm, 22*mm, 30*mm, 35*mm, 35*mm],
+                        repeatRows=1)
+            tbl.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), NAVY),
+                ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
+                ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE',   (0, 0), (-1, 0), 9),
+                ('ALIGN',      (2, 0), (-1, -1), 'CENTER'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SOFT_BG]),
+                ('LINEBELOW',  (0, 0), (-1, -1), 0.3, GREY_BORDER),
+                ('BOX',        (0, 0), (-1, -1), 0.6, GREY_BORDER),
+                ('LEFTPADDING',(0, 0), (-1, -1), 9),
+                ('RIGHTPADDING',(0, 0), (-1, -1), 9),
+                ('TOPPADDING', (0, 0), (-1, -1), 7),
+                ('BOTTOMPADDING',(0, 0), (-1, -1), 7),
+                ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            flow.append(tbl)
+
+    # ── SKOLETIMER PER ELEV ───────────────────────────────────────
+    elev_timer = {}
+    if not df_t.empty and "Elev" in df_t.columns:
+        for _, r in df_t.iterrows():
+            elev = str(r.get("Elev", "")).strip()
+            if not elev or elev.lower() == "nan":
+                continue
+            m = beregn_minutter(r.get("Starttid", ""), r.get("Sluttid", ""))
+            elev_timer[elev] = elev_timer.get(elev, 0) + m
+
+    if elev_timer:
+        flow.append(seksjonshode("🎓", "Skoletimer per elev",
+                                 "1 skoletime = 45 min · rundet opp til nærmeste halve"))
+        rader = [["Elev", "Turer", "Total kjøretid", "Skoletimer"]]
+        for elev, min_total in sorted(elev_timer.items(), key=lambda x: -x[1]):
+            antall = len(df_t[df_t["Elev"].astype(str).str.strip() == elev])
+            t_str  = f"{int(min_total/60)} t {int(min_total % 60)} min"
+            sk_str = fmt_skoletime(skoletimer(min_total))
+            rader.append([
+                Paragraph(f"<b>{elev}</b>", CELL),
+                Paragraph(str(antall), CELL),
+                Paragraph(t_str, CELL),
+                Paragraph(f"<font color='#1e3a8a' size='13'><b>{sk_str}</b></font>", CELL),
+            ])
+        tbl = Table(rader, colWidths=[78*mm, 25*mm, 40*mm, 37*mm], repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), NAVY),
+            ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
+            ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE',   (0, 0), (-1, 0), 9),
+            ('ALIGN',      (1, 0), (-1, -1), 'CENTER'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SOFT_BG]),
+            ('LINEBELOW',  (0, 0), (-1, -1), 0.3, GREY_BORDER),
+            ('BOX',        (0, 0), (-1, -1), 0.6, GREY_BORDER),
+            ('LEFTPADDING',(0, 0), (-1, -1), 10),
+            ('RIGHTPADDING',(0, 0), (-1, -1), 10),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 8),
+            ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+            ('BACKGROUND', (3, 1), (3, -1), LIGHT_BG),
+        ]))
+        flow.append(tbl)
+
     # ── KJØRETURER ────────────────────────────────────────────────
-    flow.append(Paragraph("📝 Kjøreturer", H2))
+    flow.append(seksjonshode("📝", "Kjøreturer", f"Totalt {antall_turer} oppføring(er)"))
     if df_t.empty:
         flow.append(Paragraph("<i>Ingen turer registrert i denne perioden.</i>", BODY))
     else:
-        kolonner = [("Dato","Dato"),("Bil","Bil"),("Starttid","Start"),("Sluttid","Slutt"),
+        kolonner = [("Dato","Dato"),("Bil","Bil"),
+                    ("Starttid","Start"),("Sluttid","Slutt"),
                     ("Elev","Elev"),("Instruktør","Instruktør"),
                     ("Fra","Fra"),("Til","Til"),
-                    ("Km_start","Km start"),("Km_slutt","Km slutt")]
+                    ("Km_start","Km fra"),("Km_slutt","Km til")]
         synlige = [(k, v) for k, v in kolonner if k in df_t.columns]
-        head = [v for _, v in synlige]
+        head = [Paragraph(f"<font color='white'><b>{v}</b></font>", CELL) for _, v in synlige]
         rader = [head]
-        for _, r in df_t.iterrows():
+        df_t_sortert = df_t.copy()
+        if "Dato" in df_t_sortert.columns:
+            df_t_sortert = df_t_sortert.sort_values(by=['Dato'] +
+                (['Starttid'] if 'Starttid' in df_t_sortert.columns else []))
+        for _, r in df_t_sortert.iterrows():
             rad = []
             for k, _ in synlige:
                 val = r.get(k, "")
                 if pd.isna(val): val = ""
                 if k == "Dato":
                     val = str(val)[:10]
-                rad.append(Paragraph(str(val), SMALL))
+                rad.append(Paragraph(str(val), CELL))
             rader.append(rad)
-        kol_bredder = [22*mm, 18*mm, 14*mm, 14*mm, 26*mm, 26*mm, 22*mm, 22*mm, 16*mm, 16*mm]
+        kol_bredder = [20*mm, 16*mm, 13*mm, 13*mm, 28*mm, 26*mm, 22*mm, 22*mm, 13*mm, 13*mm]
         kol_bredder = kol_bredder[:len(synlige)]
-        # juster så det summerer til ~174mm (sidebredde)
         sum_b = sum(kol_bredder)
-        if sum_b < 174:
-            kol_bredder[4] += (174 - sum_b)
+        if sum_b < SIDEBREDDE:
+            kol_bredder[4 if len(synlige) > 4 else -1] += (SIDEBREDDE - sum_b)
         tbl = Table(rader, colWidths=kol_bredder, repeatRows=1)
         tbl.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), NAVY),
-            ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
-            ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE',   (0, 0), (-1, 0), 9),
+            ('FONTSIZE',   (0, 0), (-1, 0), 8.5),
             ('ALIGN',      (0, 0), (-1, 0), 'LEFT'),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, GREY_BG]),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SOFT_BG]),
             ('LINEBELOW',  (0, 0), (-1, -1), 0.3, GREY_BORDER),
-            ('LEFTPADDING',  (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING',   (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING',(0, 0), (-1, -1), 5),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOX',        (0, 0), (-1, -1), 0.6, GREY_BORDER),
+            ('LEFTPADDING',(0, 0), (-1, -1), 6),
+            ('RIGHTPADDING',(0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
+            ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         flow.append(tbl)
 
     # ── ATK ────────────────────────────────────────────────────────
-    flow.append(Paragraph("📸 ATK-passeringer", H2))
+    flow.append(seksjonshode("📸", "ATK-passeringer", f"Totalt {antall_atk} oppføring(er)"))
     if df_a.empty:
         flow.append(Paragraph("<i>Ingen ATK-passeringer registrert i denne perioden.</i>", BODY))
     else:
         kolonner = [("Dato","Dato"),("Tid","Tid"),("Bil","Bil"),
                     ("Sjåfør","Sjåfør"),("Instruktør","Instruktør"),("Sted","Sted")]
         synlige = [(k, v) for k, v in kolonner if k in df_a.columns]
-        head = [v for _, v in synlige]
+        head = [Paragraph(f"<font color='white'><b>{v}</b></font>", CELL) for _, v in synlige]
         rader = [head]
-        for _, r in df_a.iterrows():
+        df_a_sortert = df_a.copy()
+        if "Dato" in df_a_sortert.columns:
+            df_a_sortert = df_a_sortert.sort_values(by=['Dato'] +
+                (['Tid'] if 'Tid' in df_a_sortert.columns else []))
+        for _, r in df_a_sortert.iterrows():
             rad = []
             for k, _ in synlige:
                 val = r.get(k, "")
                 if pd.isna(val): val = ""
                 if k == "Dato":
                     val = str(val)[:10]
-                rad.append(Paragraph(str(val), SMALL))
+                rad.append(Paragraph(str(val), CELL))
             rader.append(rad)
-        kol_bredder = [22*mm, 14*mm, 18*mm, 30*mm, 30*mm, 60*mm]
+        kol_bredder = [22*mm, 15*mm, 18*mm, 32*mm, 32*mm, 61*mm]
         kol_bredder = kol_bredder[:len(synlige)]
         sum_b = sum(kol_bredder)
-        if sum_b < 174:
-            kol_bredder[-1] += (174 - sum_b)
+        if sum_b < SIDEBREDDE:
+            kol_bredder[-1] += (SIDEBREDDE - sum_b)
         tbl = Table(rader, colWidths=kol_bredder, repeatRows=1)
         tbl.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), NAVY),
-            ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
-            ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE',   (0, 0), (-1, 0), 9),
+            ('BACKGROUND', (0, 0), (-1, 0), ACCENT),
+            ('FONTSIZE',   (0, 0), (-1, 0), 8.5),
             ('ALIGN',      (0, 0), (-1, 0), 'LEFT'),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, GREY_BG]),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SOFT_BG]),
             ('LINEBELOW',  (0, 0), (-1, -1), 0.3, GREY_BORDER),
-            ('LEFTPADDING',  (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING',   (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING',(0, 0), (-1, -1), 5),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOX',        (0, 0), (-1, -1), 0.6, GREY_BORDER),
+            ('LEFTPADDING',(0, 0), (-1, -1), 6),
+            ('RIGHTPADDING',(0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
+            ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         flow.append(tbl)
 
-    flow.append(Spacer(1, 18))
-    flow.append(Paragraph(
-        f"<font color='#9ca3af' size='8'>Utrykningsskolen · "
-        f"Generert {datetime.now().strftime('%d.%m.%Y kl. %H:%M')}</font>", META))
+    # ── FOOTER ─────────────────────────────────────────────────────
+    flow.append(Spacer(1, 20))
+    flow.append(Table([[
+        Paragraph(f"<font color='#94a3b8' size='8'>🚑 Utrykningsskolen · "
+                  f"Konfidensielt internt dokument</font>", META),
+        Paragraph(f"<font color='#94a3b8' size='8'>"
+                  f"{datetime.now().strftime('%d.%m.%Y · %H:%M')}</font>",
+                  ParagraphStyle('F', alignment=TA_RIGHT))
+    ]], colWidths=[120*mm, 60*mm], style=TableStyle([
+        ('LINEABOVE', (0, 0), (-1, 0), 0.5, GREY_BORDER),
+        ('TOPPADDING',(0, 0), (-1, -1), 8),
+    ])))
 
     doc.build(flow)
     buf.seek(0)
@@ -983,6 +1150,10 @@ st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
 # HJEM
 # ================================================================
 if st.session_state.side == "Hjem":
+    # Vis flash-melding (etter registrering)
+    if st.session_state.get("flash_melding"):
+        st.success(st.session_state.pop("flash_melding"))
+
     st.markdown("""
         <div style='font-size:13px; color:#6b7280; font-weight:600;
                     text-transform:uppercase; letter-spacing:.8px; margin-bottom:14px;'>
@@ -1068,7 +1239,9 @@ elif st.session_state.side == "Tur":
                     oppdater_posisjon(bil, loc['coords']['latitude'], loc['coords']['longitude'])
                 lagre_data(data, FIL_TURER)
                 st.cache_data.clear()
-                st.success(f"✅ Tur lagret — {bil}, elev: {elev}, instruktør: {instruktor}")
+                st.session_state.flash_melding = (
+                    f"✅ Tur lagret — {bil}, elev: {elev}, instruktør: {instruktor}")
+                gå_til("Hjem")
 
 # ================================================================
 # DAGSJEKK
@@ -1224,17 +1397,19 @@ elif st.session_state.side == "ATK":
                 data = {"Dato": str(date.today()), "Tid": datetime.now().strftime("%H:%M"),
                         "Bil": bil_atk, "Reg_nr": AB[bil_atk],
                         "Sjåfør": sjafor, "Instruktør": instruktor}
+                sted_tekst = ""
                 if loc:
                     lat, lon = loc['coords']['latitude'], loc['coords']['longitude']
                     sted = hent_stedsnavn(lat, lon)
                     data.update({"Lat": lat, "Lon": lon, "Sted": sted or ""})
                     oppdater_posisjon(bil_atk, lat, lon)
                     sted_tekst = f" — {sted}" if sted else f" @ {lat:.4f}, {lon:.4f}"
-                    st.success(f"✅ ATK loggført — {bil_atk}, {sjafor} / {instruktor}{sted_tekst}")
-                else:
-                    st.warning("Posisjon ikke funnet — sjekk at GPS er aktivert.")
                 lagre_data(data, FIL_ATK)
                 st.cache_data.clear()
+                st.session_state.flash_melding = (
+                    f"✅ ATK loggført — {bil_atk}, {sjafor} / {instruktor}{sted_tekst}"
+                    + ("" if loc else " (uten GPS-posisjon)"))
+                gå_til("Hjem")
 
 # ================================================================
 # RUTER
