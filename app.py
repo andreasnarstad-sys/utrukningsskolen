@@ -878,7 +878,7 @@ def lag_pdf_rapport(fra_dato, til_dato, bil_filter, periodenavn):
             ]))
             flow.append(tbl)
 
-    # ── SKOLETIMER PER ELEV ───────────────────────────────────────
+    # Beregn skoletimer (vises kompakt nederst)
     elev_timer = {}
     if not df_t.empty and "Elev" in df_t.columns:
         for _, r in df_t.iterrows():
@@ -887,39 +887,6 @@ def lag_pdf_rapport(fra_dato, til_dato, bil_filter, periodenavn):
                 continue
             m = beregn_minutter(r.get("Starttid", ""), r.get("Sluttid", ""))
             elev_timer[elev] = elev_timer.get(elev, 0) + m
-
-    if elev_timer:
-        flow.append(seksjonshode("🎓", "Skoletimer per elev",
-                                 "1 skoletime = 45 min · rundet opp til nærmeste halve"))
-        rader = [["Elev", "Turer", "Total kjøretid", "Skoletimer"]]
-        for elev, min_total in sorted(elev_timer.items(), key=lambda x: -x[1]):
-            antall = len(df_t[df_t["Elev"].astype(str).str.strip() == elev])
-            t_str  = f"{int(min_total/60)} t {int(min_total % 60)} min"
-            sk_str = fmt_skoletime(skoletimer(min_total))
-            rader.append([
-                Paragraph(f"<b>{elev}</b>", CELL),
-                Paragraph(str(antall), CELL),
-                Paragraph(t_str, CELL),
-                Paragraph(f"<font color='#1e3a8a' size='13'><b>{sk_str}</b></font>", CELL),
-            ])
-        tbl = Table(rader, colWidths=[78*mm, 25*mm, 40*mm, 37*mm], repeatRows=1)
-        tbl.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), NAVY),
-            ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
-            ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE',   (0, 0), (-1, 0), 9),
-            ('ALIGN',      (1, 0), (-1, -1), 'CENTER'),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SOFT_BG]),
-            ('LINEBELOW',  (0, 0), (-1, -1), 0.3, GREY_BORDER),
-            ('BOX',        (0, 0), (-1, -1), 0.6, GREY_BORDER),
-            ('LEFTPADDING',(0, 0), (-1, -1), 10),
-            ('RIGHTPADDING',(0, 0), (-1, -1), 10),
-            ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ('BOTTOMPADDING',(0, 0), (-1, -1), 8),
-            ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
-            ('BACKGROUND', (3, 1), (3, -1), LIGHT_BG),
-        ]))
-        flow.append(tbl)
 
     # ── KJØRETURER ────────────────────────────────────────────────
     flow.append(seksjonshode("📝", "Kjøreturer", f"Totalt {antall_turer} oppføring(er)"))
@@ -1008,6 +975,45 @@ def lag_pdf_rapport(fra_dato, til_dato, bil_filter, periodenavn):
             ('RIGHTPADDING',(0, 0), (-1, -1), 6),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
             ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
+            ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        flow.append(tbl)
+
+    # ── SKOLETIMER PER ELEV (kompakt, nederst) ────────────────────
+    if elev_timer:
+        flow.append(Spacer(1, 14))
+        flow.append(Paragraph(
+            f"<font color='#64748b' size='9'><b>🎓 SKOLETIMER PER ELEV</b> &nbsp;·&nbsp; "
+            f"<font size='8'>1 skoletime = 45 min, rundet opp til nærmeste halve</font></font>",
+            BODY))
+        flow.append(Spacer(1, 4))
+        rader = [[
+            Paragraph("<font color='white' size='8'><b>ELEV</b></font>", CELL),
+            Paragraph("<font color='white' size='8'><b>TURER</b></font>", CELL),
+            Paragraph("<font color='white' size='8'><b>TID</b></font>", CELL),
+            Paragraph("<font color='white' size='8'><b>SKOLETIMER</b></font>", CELL),
+        ]]
+        for elev, min_total in sorted(elev_timer.items(), key=lambda x: -x[1]):
+            antall = len(df_t[df_t["Elev"].astype(str).str.strip() == elev])
+            t_str  = f"{int(min_total/60)}t {int(min_total % 60)}m"
+            sk_str = fmt_skoletime(skoletimer(min_total))
+            rader.append([
+                Paragraph(f"<font size='8.5'>{elev}</font>", CELL),
+                Paragraph(f"<font size='8.5'>{antall}</font>", CELL),
+                Paragraph(f"<font size='8.5'>{t_str}</font>", CELL),
+                Paragraph(f"<font color='#1e3a8a' size='9'><b>{sk_str}</b></font>", CELL),
+            ])
+        tbl = Table(rader, colWidths=[78*mm, 25*mm, 35*mm, 42*mm], repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), NAVY),
+            ('ALIGN',      (1, 0), (-1, -1), 'CENTER'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SOFT_BG]),
+            ('LINEBELOW',  (0, 0), (-1, -1), 0.3, GREY_BORDER),
+            ('BOX',        (0, 0), (-1, -1), 0.5, GREY_BORDER),
+            ('LEFTPADDING',(0, 0), (-1, -1), 8),
+            ('RIGHTPADDING',(0, 0), (-1, -1), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
             ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         flow.append(tbl)
